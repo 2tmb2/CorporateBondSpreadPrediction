@@ -91,9 +91,6 @@ daily_fred = {
     "DBAA"     : "DBAA",     # Moody's Baa yield (daily)
     "VIXCLS"   : "VIXCLS",   # VIX (daily)
     "DCOILWTICO": "DCOILWTICO",  # WTI Crude Oil (daily)
-    "DEXUSEU"  : "DEXUSEU",  # EUR/USD exchange rate (daily)
-    "DTWEXBGS" : "DTWEXBGS", # Trade-weighted USD (daily, starts 2006)
-    "TEDRATE"  : "TEDRATE",  # TED Spread (daily, discontinued Jan 2023)
 }
 daily_raw: dict[str, pd.Series] = {}
 for name, sid in daily_fred.items():
@@ -114,13 +111,17 @@ nondaily_fred = {
     "PCEPI"     : "PCEPI",      # PCE price index
     "UNRATE"    : "UNRATE",     # Unemployment rate
     "INDPRO"    : "INDPRO",     # Industrial production
-    "RSAFS"     : "RSAFS",      # Retail sales (starts 1992)
     "UMCSENT"   : "UMCSENT",    # Michigan consumer sentiment
     "TCU"       : "TCU",        # Capacity utilisation
     # Weekly
     "NFCI"      : "NFCI",       # Chicago Fed National Financial Conditions Index
     # Quarterly
     "GDPC1"     : "GDPC1",      # Real GDP
+    # Money Supply (monthly)
+    "M1SL"      : "M1SL",       # M1 Money Stock
+    "M2SL"      : "M2SL",       # M2 Money Stock
+    # Savings deposits — needed to back out the May-2020 M1 redefinition
+    "SAVINGSL"  : "SAVINGSL",   # Savings Deposits (SA, monthly)
 }
 nondaily_raw: dict[str, pd.Series] = {}
 for name, sid in nondaily_fred.items():
@@ -131,14 +132,35 @@ for name, sid in nondaily_fred.items():
         print(f"  [FAIL] {name}: {e}")
 
 # ---------------------------------------------------------------------------
+# Adjust M1SL for the May-2020 redefinition
+# ---------------------------------------------------------------------------
+# Beginning May 2020: FRED moved savings deposits (SAVINGSL) into M1 ("other
+# liquid deposits"), and SAVINGSL was discontinued.  To put the full series on
+# the new (post-May-2020) basis, add SAVINGSL to M1SL for all dates < 2020-05-01.
+# Post-May-2020 M1SL already includes savings, so it is left unchanged.
+# M2SL needs no adjustment: M2 total is the same under both definitions.
+if "M1SL" in nondaily_raw and "SAVINGSL" in nondaily_raw:
+    m1 = nondaily_raw["M1SL"].copy()
+    savings = nondaily_raw["SAVINGSL"]
+    cutoff = pd.Timestamp("2020-05-01")
+    pre_mask = m1.index < cutoff
+    # Align savings to M1 index (both monthly, but dates may differ slightly)
+    # SAVINGSL was discontinued in May 2020, so values only exist pre-cutoff anyway
+    savings_aligned = savings.reindex(m1.index)
+    m1.loc[pre_mask] = m1.loc[pre_mask] + savings_aligned.loc[pre_mask]
+    nondaily_raw["M1SL"] = m1
+    print("\nM1SL adjusted: savings deposits added for dates < 2020-05-01 "
+          "(maps old M1 onto new post-May-2020 definition)")
+    # SAVINGSL is only a helper — drop it so it doesn't appear as its own feature
+    del nondaily_raw["SAVINGSL"]
+
+# ---------------------------------------------------------------------------
 # Download yfinance series (daily)
 # ---------------------------------------------------------------------------
 print("\nDownloading yfinance series...")
 yf_series: dict[str, pd.Series] = {}
 yf_tickers = {
     "SP500"     : ("^GSPC", "Close"),
-    "LQD_Volume": ("LQD",   "Volume"),
-    "HYG_Volume": ("HYG",   "Volume"),
 }
 for name, (ticker, col) in yf_tickers.items():
     try:
@@ -153,18 +175,6 @@ for name, (ticker, col) in yf_tickers.items():
         print(f"  [FAIL] {name}: {e}")
 
 # ---------------------------------------------------------------------------
-# Compute EUR/USD FX volatility (30-day rolling annualised std)
-# ---------------------------------------------------------------------------
-fx_vol_series: pd.Series | None = None
-if "DEXUSEU" in daily_raw:
-    _eurusd = daily_raw["DEXUSEU"].dropna()
-    _ret    = _eurusd.pct_change().dropna()
-    _vol    = _ret.rolling(window=30).std() * (252 ** 0.5)
-    fx_vol_series = _vol.dropna()
-    fx_vol_series.name = "EURUSD_FX_Vol"
-    print("\n  [OK]   EURUSD_FX_Vol (computed)")
-
-# ---------------------------------------------------------------------------
 # Assemble dataset
 # ---------------------------------------------------------------------------
 print("\nAssembling daily dataset...")
@@ -174,17 +184,9 @@ frames: dict[str, pd.Series] = {}
 for name, s in daily_raw.items():
     frames[name] = to_daily_ffill(s)
 
-# yfinance daily — SP500 forward-filled; ETF volumes NOT forward-filled
-#   (volume is meaningless on non-trading days)
+# yfinance daily — SP500 forward-filled
 if "SP500" in yf_series:
     frames["SP500"] = to_daily_ffill(yf_series["SP500"])
-for vol_name in ("LQD_Volume", "HYG_Volume"):
-    if vol_name in yf_series:
-        frames[vol_name] = yf_series[vol_name].reindex(DAILY_INDEX)
-
-# FX volatility — daily computed, forward-fill
-if fx_vol_series is not None:
-    frames["EURUSD_FX_Vol"] = to_daily_ffill(fx_vol_series)
 
 # Non-daily series — forward-fill value + days_since column
 for name, s in nondaily_raw.items():
@@ -213,15 +215,14 @@ col_order = [
     "NFCI",   "NFCI_days_since",
     # Credit (daily)
     "DAAA", "DBAA",
-    # Liquidity
-    "LQD_Volume", "HYG_Volume", "TEDRATE",
     # Consumer / Business (monthly → +days_since)
-    "RSAFS",   "RSAFS_days_since",
     "UMCSENT", "UMCSENT_days_since",
     "TCU",     "TCU_days_since",
     # International
-    "DTWEXBGS", "DCOILWTICO",
-    "DEXUSEU",  "EURUSD_FX_Vol",
+    "DCOILWTICO",
+    # Money Supply (monthly → +days_since)
+    "M1SL", "M1SL_days_since",
+    "M2SL", "M2SL_days_since",
 ]
 # Keep only columns that were successfully downloaded
 col_order = [c for c in col_order if c in frames]
@@ -232,6 +233,25 @@ df = df.loc[START:END]
 
 out_path = os.path.join(DATA_DIR, "dataset.csv")
 df.to_csv(out_path)
+
+# ---------------------------------------------------------------------------
+# Save no-recessions dataset (same columns, recession periods removed)
+# ---------------------------------------------------------------------------
+RECESSION_PERIODS = [
+    ("1990-07-01", "1991-07-01"),
+    ("2001-04-01", "2001-12-31"),
+    ("2008-01-01", "2009-09-30"),
+    ("2020-01-01", "2020-06-30"),
+]
+
+recession_mask = pd.Series(False, index=df.index)
+for start_r, end_r in RECESSION_PERIODS:
+    recession_mask |= (df.index >= start_r) & (df.index <= end_r)
+
+df_nr = df.loc[~recession_mask]
+nr_path = os.path.join(DATA_DIR, "dataset-no-recessions.csv")
+df_nr.to_csv(nr_path)
+print(f"No-recessions saved: {nr_path}  ({df_nr.shape[0]} rows)")
 
 # ---------------------------------------------------------------------------
 # Report
