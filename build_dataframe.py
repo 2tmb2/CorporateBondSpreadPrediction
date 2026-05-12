@@ -1,11 +1,10 @@
 import numpy as np
 import pandas as pd
 
-def build_df(split: float) -> pd.DataFrame:
+def build_df(split: float, H: int) -> pd.DataFrame:
     df = pd.read_csv('./data/dataset-no-recessions.csv', parse_dates=['Date']).set_index('Date').sort_index()
 
     # H = Forecast horizon (days ahead).
-    H = 1
     # split = test/train split
 
     # Supervised setup: features at time t predict BAA10Y at time t+H.
