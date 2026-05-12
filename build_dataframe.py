@@ -1,8 +1,11 @@
 import numpy as np
 import pandas as pd
 
-def build_df(split: float, H: int) -> pd.DataFrame:
+def build_df(split: float, H: int, use_recessions: bool = False) -> pd.DataFrame:
     df = pd.read_csv('./data/dataset-no-recessions.csv', parse_dates=['Date']).set_index('Date').sort_index()
+    if use_recessions:
+        df = pd.read_csv('./data/dataset.csv', parse_dates=['Date']).set_index('Date').sort_index()
+
 
     # H = Forecast horizon (days ahead).
     # split = test/train split
