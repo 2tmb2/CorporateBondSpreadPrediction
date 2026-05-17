@@ -21,4 +21,7 @@ def add_trend_features(df: pd.DataFrame) -> pd.DataFrame:
     d['DFF_mom21']          = d['DFF'] - d['DFF'].shift(21)
     d['credit_tier_spread'] = d['DBAA'] - d['DAAA']
 
+    d['month_sin'] = np.sin(2 * np.pi * d.index.month / 12)
+    d['month_cos'] = np.cos(2 * np.pi * d.index.month / 12)
+
     return d
