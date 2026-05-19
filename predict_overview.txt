@@ -1,0 +1,226 @@
+PREDICT.IPYNB -- OVERVIEW FOR PRESENTATION
+==========================================
+Corporate Bond Spread Prediction
+Target: BAA10Y (Moody's Baa minus 10-Year Treasury yield, in percentage points)
+Current spread as of 2026-05-18: 1.62 pp
+
+
+WHAT IT DOES
+------------
+predict.ipynb is the main prediction and evaluation notebook. It runs in four phases:
+
+  Phase 1 -- TEST:   Honest backtest to measure model and ensemble quality.
+  Phase 2 -- SHOW:   Comparison charts from the backtest.
+  Phase 3 -- TRAIN:  Retrain all models on the most recent 30 years of data.
+  Phase 4 -- PREDICT: Produce tomorrow's spread forecast for H=1, H=7, H=28.
+
+This structure keeps evaluation separate from production, which prevents the
+models that produce the final prediction from influencing how we measure accuracy.
+
+
+PHASE 1 -- TEST (leakage-free backtest)
+----------------------------------------
+Two fully separated windows are used -- no overlap between them or with production:
+
+  Pass 1 -- Backtest weights  : trained up to Sep 2025, tested on Q4 2025
+  Pass 2 -- Evaluation window : trained up to Dec 2025, tested on Q1 2026
+
+For each horizon H (1, 7, 28 days), all 10 models are fit and evaluated on the
+unseen Q1 2026 window (Jan-Mar 2026, ~90 days). Metrics reported per model:
+  - RMSE (Root Mean Squared Error) -- lower is better
+  - DirAcc (Directional Accuracy)  -- % of days the model correctly called
+                                      whether the spread went UP or DOWN
+                                      relative to the spread at the feature date
+
+How DirAcc is computed:
+  actual_direction   = sign(actual_spread_at_target - spread_at_feature_date)
+  predicted_direction = sign(predicted_spread      - spread_at_feature_date)
+  DirAcc = correct calls / total non-flat days   (50% = coin flip)
+
+The ensemble uses DIRECTION-CONDITIONAL PRECISION WEIGHTING:
+  If a model predicts UP, its weight = how often it was right calling UP (in Q4 2025).
+  If a model predicts DOWN, its weight = how often it was right calling DOWN (in Q4 2025).
+  Q4 2025 precision weights are used to evaluate Q1 2026 -- no future information used.
+
+Production weights (model_precision) also come from Q1 2026 (Pass 2), computed on
+models trained only through Dec 2025. The production models train through May 2026,
+so the precision window is fully out-of-sample relative to those weight-estimation models.
+
+
+PHASE 2 -- SHOW (comparison plots)
+------------------------------------
+Two dashboards are generated and saved as PNG files:
+
+  backtest_comparison.png
+    - 3x3 grid (one column per horizon H=1, H=7, H=28)
+    - Row 1: RMSE bar chart -- each model vs naive (no-change) baseline
+    - Row 2: Directional Accuracy bar chart -- each model vs 50% coin-flip
+    - Row 3: Time-series -- actual spread vs ensemble vs best individual model
+    - Ensemble shown in dark blue; models that beat the naive baseline shown in blue,
+      those that don't in red
+    - Leaderboard printed below the chart
+
+  accuracy_diagram.png
+    - Panel A: DirAcc heatmap (models x horizons, sorted by average DirAcc)
+    - Panel B: RMSE heatmap (column-normalised so colours are comparable across horizons)
+    - Panel C: Grouped bar chart -- DirAcc per model per horizon, sorted by H=28 performance
+    - Ensemble annotated separately; red dashed line = 50% coin-flip baseline
+
+
+WHY THE ENSEMBLE IS WORTH IT
+------------------------------
+At H=1 (next day), all models predict almost the same value because the spread
+barely moves overnight -- the ensemble adds little beyond any single model.
+
+At H=28 (next month), models genuinely disagree (predictions can range from 1.64 to 2.09).
+The ensemble at H=28 consistently beats the naive no-change baseline in RMSE and achieves
+directional accuracy well above 50%, while several individual models underperform.
+
+The direction-conditional precision weighting means the ensemble up-weights models that
+historically gave reliable signals in the direction they are predicting right now --
+rather than blindly averaging.
+
+
+THE 10 MODELS
+--------------
+Two dataset variants are used throughout:
+  no-rec   -- Moody's recessions removed from training data
+  with-rec -- Full dataset including recession periods
+
+Model types:
+  XGBoost   -- Gradient boosted trees; hyperparameter n_estimators chosen by
+               early stopping (validated on last 20% of training data per run)
+  Random Forest (RF) -- 500 trees; strict training mask (requires all features
+               to be non-NaN, i.e. full 252-day history available)
+  Ridge     -- L2-regularised linear regression; features standardised per run
+  Lasso     -- L1-regularised linear regression; alpha selected by 80/20 CV
+  Linear    -- OLS linear regression; features standardised per run
+
+All 5 types x 2 datasets = 10 models per horizon. Three horizons = 30 model runs total
+in each backtest pass (60 total across both passes), and another 30 for production training.
+
+
+HORIZONS
+---------
+H=1  (next day):   input features from today; target = tomorrow's spread
+H=7  (next week):  input features from 7 days ago; target = today's spread
+H=28 (next month): input features from 28 days ago; target = today's spread
+
+All three horizons predict the SAME date (tomorrow). The difference is how far
+in advance the prediction is being made and which historical features are used.
+At H=7 the model sees data from a week ago; at H=28 it sees data from a month ago.
+
+
+PHASE 3 -- TRAIN (production models)
+--------------------------------------
+After the comparison charts, all 10 models are retrained on the most recent
+30 years of data (up to and including today's date). This is the set of models
+used to produce the actual spread forecast.
+
+Training cutoff for production = latest available data (2026-05-18).
+
+
+PHASE 4 -- PREDICT (final forecast)
+-------------------------------------
+The ensemble prediction for each horizon is printed and plotted.
+Weighting uses model_precision computed on Q1 2026 -- out-of-sample for the models
+that generated those weights (trained only to Dec 2025), and fully separate from
+the production models (trained to May 2026).
+
+Example output format:
+  H=1 : Weighted ensemble = 1.6196  (DOWN, delta=-0.0004)
+  H=7 : Weighted ensemble = 1.6545  (UP,   delta=+0.0345)
+  H=28: Weighted ensemble = 1.7186  (UP,   delta=+0.0986)
+
+A bar chart shows each model's individual prediction alongside the ensemble line
+and the naive (no-change) baseline for each horizon.
+
+
+FEATURE SET (~52 input columns)
+---------------------------------
+See feature_guide.txt for full descriptions. Summary:
+
+  Raw market/macro series (~30 columns):
+    DFF, DGS10, DGS2, DAAA, DBAA, VIXCLS, SP500, DCOILWTICO
+    CPI, PPI, PCE, unemployment, GDP, industrial production, consumer sentiment,
+    capacity utilisation, NFCI, M1, M2  (monthly/quarterly, forward-filled)
+    _days_since variants for each low-frequency series
+
+  Engineered features (22 columns):
+    BAA10Y momentum (5d, 21d), acceleration, 21d rolling mean/std, z-score (252d), RSI(14)
+    Yield curve slope and 21d change
+    VIX 21d mean, momentum, spike ratio
+    S&P 500 21d return
+    Fed funds rate 21d change
+    Credit tier spread (Baa-Aaa) and 21d change
+    Risk-on/risk-off composite
+    Oil 21d return
+    NFCI 4-week trend
+    Seasonal encoding (month sin/cos)
+    Secular time trend (years since 1990)
+
+
+FUTURE IMPLEMENTATION -- REGIME-MATCHED PRECISION WEIGHTING
+-------------------------------------------------------------
+Currently, precision weights are computed from the single preceding quarter (Q4 2025
+for weights, Q1 2026 for evaluation). A more principled approach would select the
+calibration quarter based on how well it matches the current market environment.
+
+Core idea:
+  Rather than always using the immediately preceding quarter, search across all
+  historical quarters and score each one by how similar its market conditions are
+  to the current quarter. Use the best-matching quarters as the precision window.
+
+Why recency alone is insufficient:
+  Quarters close in time will naturally score high on similarity just because markets
+  drift slowly -- effectively reinventing "use the previous quarter" with extra steps.
+  The real value of searching history is catching recurring cycle patterns (rate hiking
+  cycles, post-crisis recoveries, inflation regimes) that may have last appeared 10-15
+  years ago but are structurally more similar to today than recent quarters.
+
+Why raw historical similarity is also insufficient:
+  Two quarters can look similar on VIX and yield curve but be driven by completely
+  different mechanisms -- one by credit supply, one by inflation expectations. Historical
+  similarity in conditions does not guarantee that the features were informative about
+  spread direction during that period. The right question is not "did conditions look
+  similar?" but "did the feature set have strong predictive power over the following
+  quarter?"
+
+What to measure when selecting the calibration window:
+  1. Feature-space similarity -- cosine similarity or Euclidean distance on standardised
+     macro/market features (VIX level, yield curve slope, spread level, NFCI, etc.)
+     between the candidate quarter and the current quarter.
+  2. Feature predictive quality -- how strong was the feature-to-outcome relationship
+     in the quarter PRECEDING the candidate window? If that prior quarter's features
+     were genuinely leading the spread, precision estimates from the candidate window
+     are trustworthy. If the relationship broke down (structural shock, decoupling),
+     those precision estimates are noise regardless of surface similarity.
+  3. Time-decayed similarity score -- blend similarity with a mild time decay so that
+     very recent quarters get a small boost but do not automatically dominate. The decay
+     should be slow enough that a genuine 2008-like analog still receives meaningful
+     weight, but fast enough that random distant quarters do not pollute the estimate.
+
+Practical design:
+  - Compute a rolling similarity score for every historical quarter against the current
+    feature environment (last 63 trading days of available data).
+  - Weight each quarter's precision estimates by its similarity * time_decay score.
+  - Aggregate into a single weighted precision table instead of picking one quarter.
+  - Calibrate the time decay parameter to avoid overfitting the weighting scheme
+    itself to backtest results (cross-validate on held-out years).
+
+Challenge:
+  The decay rate must be chosen carefully. Too fast -> collapses to recency, missing
+  rare historical patterns. Too slow -> distant structurally irrelevant quarters
+  contaminate the weights. Validating the decay requires a second-level backtest that
+  is itself free of look-ahead bias.
+
+
+KEY FILES
+----------
+  predict.ipynb          -- This notebook
+  feature_engineering.py -- Shared feature engineering function
+  feature_guide.txt      -- Plain-text description of every feature
+  data/dataset.csv       -- Full dataset (with recessions)
+  data/dataset-no-recessions.csv -- Recession periods removed
+  backtest_comparison.png -- Saved comparison dashboard
+  accuracy_diagram.png    -- Saved accuracy heatmap/bar chart
