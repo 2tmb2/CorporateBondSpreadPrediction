@@ -22,6 +22,7 @@ Date range: 1990-01-01 → 2026-01-01  (calendar days, inclusive)
 import io
 import os
 import warnings
+from datetime import date, timedelta
 
 import numpy as np
 import pandas as pd
@@ -33,8 +34,9 @@ warnings.filterwarnings("ignore")
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 
-START = "1990-01-01"
-END   = "2026-01-01"
+START    = "1990-01-01"
+END      = date.today().strftime("%Y-%m-%d")
+END_YF   = (date.today() + timedelta(days=1)).strftime("%Y-%m-%d")
 
 DAILY_INDEX = pd.date_range(start=START, end=END, freq="D")
 
@@ -164,11 +166,11 @@ yf_tickers = {
 }
 for name, (ticker, col) in yf_tickers.items():
     try:
-        df = yf.download(ticker, start=START, end="2026-01-02",
+        df = yf.download(ticker, start=START, end=END_YF,
                          auto_adjust=True, progress=False)
         s = df[col].squeeze()
         s.name = name
-        s = s.loc[START:END]
+        s = s.loc[START:]
         yf_series[name] = s
         print(f"  [OK]   {name}")
     except Exception as e:

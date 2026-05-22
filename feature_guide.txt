@@ -1,0 +1,182 @@
+FEATURE GUIDE -- CorporateBondSpreadPrediction
+==============================================
+Target variable: BAA10Y -- Moody's Baa Corporate Bond Yield minus 10-Year Treasury yield.
+A wider spread = more credit risk perceived by the market.
+
+All engineered features are purely backward-looking (no look-ahead bias).
+Leading NaN rows (from rolling windows) are dropped by the training mask in each model.
+
+
+RAW DATASET COLUMNS
+-------------------
+BAA10Y          Target. Daily Baa-10Y spread (percentage points). Source: FRED BAA10Y.
+
+DFF             Federal Funds Rate (daily). The overnight rate the Fed sets;
+                drives short-term borrowing costs.
+
+DGS10           10-Year US Treasury yield (daily). Benchmark long-term risk-free rate.
+
+DGS2            2-Year US Treasury yield (daily). Short-term rate expectations.
+
+DAAA            Moody's Aaa corporate bond yield (daily). Highest-quality corporate rate.
+
+DBAA            Moody's Baa corporate bond yield (daily). Lowest investment-grade rate.
+                BAA10Y = DBAA - DGS10.
+
+VIXCLS          CBOE VIX volatility index (daily). Market's expectation of near-term equity
+                volatility; often called the "fear gauge."
+
+DCOILWTICO      WTI crude oil price (daily). Economic activity proxy; oil demand rises
+                with growth.
+
+SP500           S&P 500 closing price (daily). Broad US equity market level.
+
+CPIAUCSL        Consumer Price Index (monthly, forward-filled). Headline inflation.
+CPIAUCSL_days_since  Calendar days since last CPI release.
+
+PPIACO          Producer Price Index (monthly, forward-filled). Upstream cost pressure.
+PPIACO_days_since
+
+PCEPI           PCE Price Index (monthly, forward-filled). Fed's preferred inflation measure.
+PCEPI_days_since
+
+UNRATE          Unemployment rate (monthly, forward-filled). Labour market slack.
+UNRATE_days_since
+
+GDPC1           Real GDP (quarterly, forward-filled). Broadest economic output measure.
+GDPC1_days_since
+
+INDPRO          Industrial production index (monthly, forward-filled). Factory/mine/utility
+                output; leading cyclical indicator.
+INDPRO_days_since
+
+UMCSENT         University of Michigan Consumer Sentiment (monthly, forward-filled).
+                Household confidence; leads consumption.
+UMCSENT_days_since
+
+TCU             Capacity utilization rate (monthly, forward-filled). Fraction of industrial
+                capacity in use; high values precede investment and inflation.
+TCU_days_since
+
+NFCI            Chicago Fed National Financial Conditions Index (weekly, forward-filled).
+                Composite of 105 financial variables. Positive = tighter than average.
+NFCI_days_since
+
+M1SL            M1 money stock (monthly, forward-filled). Adjusted for the May-2020
+                redefinition that moved savings deposits into M1.
+M1SL_days_since
+
+M2SL            M2 money stock (monthly, forward-filled). Includes savings deposits,
+                small time deposits, retail money funds.
+M2SL_days_since
+
+
+ENGINEERED FEATURES (from feature_engineering.py)
+--------------------------------------------------
+
+BAA10Y_roll21_mean
+  21-day rolling mean of BAA10Y. Smoothed spread; removes day-to-day noise to reveal
+  the underlying trend. A rising mean signals worsening credit conditions.
+
+BAA10Y_roll21_std
+  21-day rolling standard deviation of BAA10Y. Spread volatility over the past month.
+  High std = unstable credit environment; often precedes directional moves.
+
+BAA10Y_mom5
+  BAA10Y - BAA10Y shifted 5 days. Short-term (one-week) momentum in the spread.
+  Positive = spread widened recently; negative = tightened.
+
+BAA10Y_mom21
+  BAA10Y - BAA10Y shifted 21 days. Monthly momentum. Captures medium-term directional
+  pressure on credit risk.
+
+BAA10Y_accel
+  BAA10Y_mom5 - BAA10Y_mom5 shifted 5 days. The second derivative of the spread.
+  Positive = momentum is accelerating (spread widening faster); negative = decelerating
+  or reversing. Useful for catching turning points.
+
+BAA10Y_zscore252
+  (BAA10Y - 252-day rolling mean) / 252-day rolling std. How many standard deviations
+  the current spread is from its 1-year average. Strong positive values signal an
+  overextended spread likely to mean-revert; strong negative values signal compression.
+
+BAA10Y_RSI14
+  14-day Relative Strength Index applied to BAA10Y. Ranges 0-100.
+  Above 70 = spread overbought (may tighten); below 30 = oversold (may widen).
+  Standard momentum oscillator adapted to the credit market.
+
+yield_curve_slope
+  DGS10 - DGS2. The 2s10s spread. Positive = normal upward-sloping curve;
+  negative (inverted) = historically reliable recession warning and often precedes
+  spread widening. One of the strongest macro predictors in the feature set.
+
+yield_curve_chg21
+  yield_curve_slope - yield_curve_slope shifted 21 days. Whether the yield curve is
+  steepening or flattening over the past month. Rapid flattening often foreshadows
+  credit stress even before inversion occurs.
+
+VIX_roll21_mean
+  21-day rolling mean of VIX. Smoothed fear level; filters spikes to show the
+  underlying volatility regime.
+
+VIX_mom21
+  VIXCLS - VIXCLS shifted 21 days. Month-over-month change in fear. Rising VIX
+  momentum typically correlates with spread widening.
+
+VIX_spike
+  VIXCLS / VIX_roll21_mean. How elevated today's VIX is relative to its own recent
+  average. Values > 1.2 indicate an unusually fearful market day (regime shift signal).
+
+SP500_mom21
+  SP500 / SP500 shifted 21 days - 1. Equity market return over the past month.
+  Rising equity prices generally coincide with spread tightening (risk-on); falling
+  equity with spread widening (risk-off).
+
+DFF_mom21
+  DFF - DFF shifted 21 days. Change in the Fed funds rate over the past month.
+  Rising DFF_mom21 = the Fed is tightening, which typically pressures credit spreads.
+
+credit_tier_spread
+  DBAA - DAAA. The spread between Baa and Aaa corporate yields. Measures within-
+  credit-market quality differentiation. Widening = investors demanding more premium
+  for taking on lower-quality credit risk (flight-to-quality within corporates).
+
+credit_tier_chg21
+  credit_tier_spread - credit_tier_spread shifted 21 days. Whether the quality gap
+  between investment-grade tiers is growing or shrinking over the past month.
+
+risk_on_off
+  SP500_mom21 * (-BAA10Y_mom21). Cross-asset flow composite.
+  Positive = equity rising AND spread falling simultaneously (classic risk-on).
+  Negative = equity falling AND spread rising (classic risk-off / flight-to-safety).
+  Near zero = markets are not moving in lockstep, suggesting mixed signals.
+
+oil_mom21
+  DCOILWTICO / DCOILWTICO shifted 21 days - 1. Oil price return over the past month.
+  Rising oil reflects stronger demand / growth expectations; falling oil can signal
+  recession fears, both of which affect credit spreads with a lag.
+
+NFCI_trend
+  NFCI - NFCI shifted 20 days. Four-week change in the Chicago Fed Financial
+  Conditions Index. Positive = financial conditions tightening (higher NFCI is worse);
+  negative = loosening. Captures near-term momentum in the broadest financial stress
+  composite available at weekly frequency.
+
+month_sin, month_cos
+  Sine and cosine encoding of the calendar month (month_sin = sin(2*pi*month/12),
+  month_cos = cos(2*pi*month/12)). Captures smooth annual seasonality in credit spreads
+  without requiring dummy variables for each month.
+
+time_idx
+  (date - 1990-01-01).days / 365.25. Years elapsed since 1990-01-01 (e.g. 2024 ~ 34.0).
+  Allows models to learn secular regime shifts -- e.g. pre-2008 credit conditions
+  were structurally different from post-crisis ones. Without this, two observations
+  with identical feature values but 20 years apart look the same to the model.
+  Acts as a slow-moving background signal; should not dominate over economic features.
+
+
+FEATURE COUNT SUMMARY
+----------------------
+Raw dataset columns used as inputs : ~30 (including _days_since variants)
+Engineered features added           : 22
+Total model input columns           : ~52 (before the strict-NaN training mask)
